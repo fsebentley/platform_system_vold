@@ -45,13 +45,15 @@ public:
     static const char *ASECDIR;
 
     static const char *LOOPDIR;
-    static const int MAX_PARTITIONS = 8;  /* modified by javen */
+    static const int MAX_PARTITIONS = 16;           /* modified by javen */
+    static const int MAX_UNMOUNT_PARTITIONS = 256;  /* modified by javen */
 
 protected:
     char *mLabel;
     char *mMountpoint;
 
-    char *mMountPart[MAX_PARTITIONS];
+    char *mMountPart[MAX_PARTITIONS];           //挂载点
+    char *mUnMountPart[MAX_UNMOUNT_PARTITIONS]; //为删除成功的挂载点
     int mSharelun[MAX_PARTITIONS];
 
     VolumeManager *mVm;
@@ -110,6 +112,8 @@ private:
 
     char* createMountPoint(const char *path, int major, int minor);
     int deleteMountPoint(char* mountpoint);
+    void saveUnmountPoint(char* mountpoint);
+    void deleteUnMountPoint(int clear);
 
     int mMountedPartNum; /* the partition numbers that had mounted */
 };

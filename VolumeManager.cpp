@@ -718,7 +718,20 @@ int VolumeManager::mountAsec(const char *id, const char *key, int ownerUid) {
             return -1;
         }
     }
-
+    int iSleep=0,fdDm;
+	while((fdDm=open(dmDevice,O_RDWR))<0){
+	   SLOGE("fail to open %s ",dmDevice);
+	   SLOGE("Sleep number %d ",iSleep);
+       usleep(50000);
+	   SLOGD("try open %s again",dmDevice);
+	   if(iSleep++>=6){
+        break;
+	   }  
+	}
+	if(fdDm>=0){
+		close(fdDm);
+		SLOGD("open %s succeed",dmDevice);
+		}
     if (Fat::doMount(dmDevice, mountPoint, true, false, true, ownerUid, 0,
                      0222, false)) {
 //                     0227, false)) {

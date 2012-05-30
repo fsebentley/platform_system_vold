@@ -49,7 +49,7 @@
 #include "Process.h"
 #include "cryptfs.h"
 
-#define  V_MAX_PARTITIONS		8
+#define  V_MAX_PARTITIONS		16
 
 extern "C" void dos_partition_dec(void const *pp, struct dos_partition *d);
 extern "C" void dos_partition_enc(void *pp, struct dos_partition *d);
@@ -121,6 +121,15 @@ Volume::Volume(VolumeManager *vm, const char *label, const char *mount_point) {
     mCurrentlyMountedKdev = -1;
     mPartIdx = -1;
     mRetryMount = false;
+
+	for(int i = 0; i < MAX_PARTITIONS; i++){
+        mMountPart[i] = NULL;
+		mSharelun[i] = 0;
+	}
+
+	for(int i = 0; i < MAX_UNMOUNT_PARTITIONS; i++){
+        mUnMountPart[i] = NULL;
+	}
 }
 
 Volume::~Volume() {
@@ -268,6 +277,7 @@ int Volume::deleteDeviceNode(const char *path){
 	}
 
 #endif
+
 	return 0;
 }
 
@@ -278,15 +288,16 @@ char* Volume::createMountPoint(const char *path, int major, int minor) {
 	sprintf(mountpoint, "%s/%d_%d", path, major, minor);
 
 	if( access(mountpoint, F_OK) ){
-		SLOGW("Volume: file '%s' is not exist, create it", mountpoint);
+		SLOGI("Volume: file '%s' is not exist, create it", mountpoint);
 
 		if(mkdir(mountpoint, 0777)){
 			SLOGW("Volume: create file '%s' failed, errno is %d", mountpoint, errno);
 			return NULL;
 		}
 	}else{
+		/* 上一次遗留的多分区挂载点，这次是否还需要被使用??? */
 		SLOGW("Volume: file '%s' is exist, can not create it", mountpoint);
-		return NULL;
+		return mountpoint;
 	}
 
 	return mountpoint;
@@ -296,16 +307,57 @@ int Volume::deleteMountPoint(char* mountpoint) {
 	if(mountpoint){
 		if( !access(mountpoint, F_OK) ){
 			SLOGW("Volume::deleteMountPoint: %s", mountpoint);
-			rmdir(mountpoint);
+			if(rmdir(mountpoint)){
+				SLOGW("Volume: remove file '%s' failed, errno is %d", mountpoint, errno);
+				return -1;
+			}
 		}
 
+		/* 无论是否删除成功，这里都释放内存 */
 		free(mountpoint);
+		mountpoint = NULL;
 	}
 
 	return 0;
 }
 
+void Volume::saveUnmountPoint(char* mountpoint){
+	int i = 0;
+
+	for(i = 0; i < MAX_UNMOUNT_PARTITIONS; i++){
+		if(mUnMountPart[i] == NULL){
+			mUnMountPart[i] = mMountPart[i];
+		}
+	}
+
+	if(i >= MAX_UNMOUNT_PARTITIONS){
+		SLOGI("Volume::saveUnmountPoint: unmount point is over %d", MAX_UNMOUNT_PARTITIONS);
+	}
+
+	return;
+}
+
+/* 删除所有挂载目录 */
+void Volume::deleteUnMountPoint(int clear){
+	int i = 0;
+
+	for(i = 0; i < MAX_UNMOUNT_PARTITIONS; i++){
+		if(mUnMountPart[i]){
+			SLOGW("Volume::deleteUnMountPoint: %s", mUnMountPart[i]);
+
+			if(deleteMountPoint(mUnMountPart[i]) == 0){
+				deleteDeviceNode(mUnMountPart[i]);
+				mUnMountPart[i] = NULL;
+			}
+		}
+	}
+
+	return;
+}
+
 int Volume::formatVol() {
+	
+	char lable[32];	
 
     if (getState() == Volume::State_NoMedia) {
         errno = ENODEV;
@@ -332,26 +384,14 @@ int Volume::formatVol() {
 
     int ret = -1;
     // Only initialize the MBR if we are formatting the entire device
-    if (formatEntireDevice) {
-        sprintf(devicePath, "/dev/block/vold/%d:%d",
-                MAJOR(diskNode), MINOR(diskNode));
-
-		SLOGI("init mbr %s (%s)", getLabel(), devicePath);
-
-        if (initializeMbr(devicePath)) {
-            SLOGE("Failed to initialize MBR (%s)", strerror(errno));
-            goto err;
-        }
-    }
-
 	getDeviceNodes(&partNode, 1);
     sprintf(devicePath, "/dev/block/vold/%d:%d",MAJOR(partNode), MINOR(partNode));
 
     if (mDebug) {
         SLOGI("Formatting volume %s (%s)", getLabel(), devicePath);
     }
-
-    if (Fat::format(devicePath, 0)) {
+    property_get("ro.udisk.lable", lable, "udisk");
+    if (Fat::format(devicePath, 0,lable)) {
         SLOGE("Failed to format (%s)", strerror(errno));
         goto err;
     }
@@ -407,7 +447,7 @@ int Volume::mountVol() {
     /* Don't try to mount the volumes if we have not yet entered the disk password
      * or are in the process of encrypting.
      */
-    SLOGW("Volume::mountVol state : %d", getState());
+    SLOGI("Volume::mountVol state : %d", getState());
     if ((getState() == Volume::State_NoMedia) ||
         ((!strcmp(decrypt_state, "1") || encrypt_progress[0]) && primaryStorage)) {
         snprintf(errmsg, sizeof(errmsg),
@@ -497,6 +537,9 @@ int Volume::mountVol() {
 	/* 设置挂载点得权限 */
 	if(((mPartIdx == -1) &&(n > 1)) && mMountpoint){
 		chmod(mMountpoint, 0x777);
+
+		/* 删除上一次残留的多分区挂载点 */
+		deleteUnMountPoint(1);
 	}
 
     for (i = 0; i < n; i++) {
@@ -829,8 +872,13 @@ int Volume::unmountVol(bool force, bool revert) {
 					return -1;
 				}
 
-				deleteMountPoint(mMountPart[i]);
-				deleteDeviceNode(mMountPart[i]);
+				if(deleteMountPoint(mMountPart[i])){
+					/* 删除失败就保存起来，下次接着删除 */
+					saveUnmountPoint(mMountPart[i]);
+				}else{
+					deleteDeviceNode(mMountPart[i]);
+				}
+
 				mMountPart[i] = NULL;
 			}
 		}else{
@@ -886,6 +934,7 @@ int Volume::unmountVol(bool force, bool revert) {
 
 	/* 设置挂载点得权限 */
 	if(((mPartIdx == -1) &&(mMountedPartNum > 1)) && mMountpoint){
+		deleteUnMountPoint(0);
 		chmod(mMountpoint, 0x00);
 	}
 
