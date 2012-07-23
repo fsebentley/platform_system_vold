@@ -327,14 +327,16 @@ void DirectVolume::handlePartitionRemoved(const char *devpath, NetlinkEvent *evt
     if ((dev_t) MKDEV(major, minor) == mCurrentlyMountedKdev) {
         /*
          * Yikes, our mounted partition is going away!
+            don't send Broadcast  when it's "usb" or "extsd"
          */
-
-        snprintf(msg, sizeof(msg), "Volume %s %s bad removal (%d:%d)",
+         
+        if(!strstr(getLabel(),"usb")&&!strstr(getLabel(),"extsd")){
+           snprintf(msg, sizeof(msg), "Volume %s %s bad removal (%d:%d)",
                  getLabel(), getMountpoint(), major, minor);
         mVm->getBroadcaster()->sendBroadcast(ResponseCode::VolumeBadRemoval,
                                              msg, false);
-
-	if (mVm->cleanupAsec(this, true)) {
+		}		       
+		if (mVm->cleanupAsec(this, true)) {
             SLOGE("Failed to cleanup ASEC - unmount will probably fail!");
         }
 
