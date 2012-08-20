@@ -45,6 +45,7 @@ DirectVolume::DirectVolume(VolumeManager *vm, const char *label,
     mDiskMajor = -1;
     mDiskMinor = -1;
     mDiskNumParts = 0;
+	mPartsEventCnt = 0;
 
     setState(Volume::State_NoMedia);
 }
@@ -148,6 +149,8 @@ void DirectVolume::handleDiskAdded(const char *devpath, NetlinkEvent *evt) {
         mDiskNumParts = 1;
     }
 
+	mPartsEventCnt = 0;
+
     char msg[255];
 
     int partmask = 0;
@@ -184,6 +187,13 @@ void DirectVolume::handlePartitionAdded(const char *devpath, NetlinkEvent *evt) 
 
     const char *tmp = evt->findParam("PARTN");
 
+	if(mPartsEventCnt > mDiskNumParts){
+		SLOGW("Partition event is to much, mPartsEventCnt=%d, mDiskNumParts=%d\n", mPartsEventCnt, mDiskNumParts);
+		mPartsEventCnt = mDiskNumParts;
+	}else{
+		mPartsEventCnt++;
+	}
+
     if (tmp) {
         part_num = atoi(tmp);
     } else {
@@ -212,7 +222,9 @@ void DirectVolume::handlePartitionAdded(const char *devpath, NetlinkEvent *evt) 
     } else {
         mPartMinors[part_num -1] = minor;
     }
-    mPendingPartMap &= ~(1 << part_num);
+
+    //mPendingPartMap &= ~(1 << part_num);
+    mPendingPartMap &= ~(1 << mPartsEventCnt);
 
     if (!mPendingPartMap) {
 #ifdef PARTITION_DEBUG
@@ -249,6 +261,8 @@ void DirectVolume::handleDiskChanged(const char *devpath, NetlinkEvent *evt) {
         mDiskNumParts = 1;
     }
 
+	mPartsEventCnt = 0;
+
     int partmask = 0;
     int i;
     for (i = 1; i <= mDiskNumParts; i++) {
@@ -281,6 +295,9 @@ void DirectVolume::handleDiskRemoved(const char *devpath, NetlinkEvent *evt) {
              getLabel(), getMountpoint(), major, minor);
     mVm->getBroadcaster()->sendBroadcast(ResponseCode::VolumeDiskRemoved,
                                              msg, false);
+	/* 2011-4-30 force unmount fs */
+	SLOGD("DirectVolume : handleDiskRemoved : unmountVol");
+	Volume::unmountVol(true,true);
     setState(Volume::State_NoMedia);
 }
 
@@ -302,23 +319,25 @@ void DirectVolume::handlePartitionRemoved(const char *devpath, NetlinkEvent *evt
     if (state != Volume::State_Mounted && state != Volume::State_Shared) {
         return;
     }
-        
+
     if ((dev_t) MKDEV(major, minor) == mCurrentlyMountedKdev) {
         /*
          * Yikes, our mounted partition is going away!
+            don't send Broadcast  when it's "usb" or "extsd"
          */
-
-        snprintf(msg, sizeof(msg), "Volume %s %s bad removal (%d:%d)",
+         
+        if(!strstr(getLabel(),"usb")&&!strstr(getLabel(),"extsd")){
+           snprintf(msg, sizeof(msg), "Volume %s %s bad removal (%d:%d)",
                  getLabel(), getMountpoint(), major, minor);
-        mVm->getBroadcaster()->sendBroadcast(ResponseCode::VolumeBadRemoval,
+           mVm->getBroadcaster()->sendBroadcast(ResponseCode::VolumeBadRemoval,
                                              msg, false);
-
-	if (mVm->cleanupAsec(this, true)) {
+		}		       
+		if (mVm->cleanupAsec(this, true)) {
             SLOGE("Failed to cleanup ASEC - unmount will probably fail!");
         }
 
         if (Volume::unmountVol(true, false)) {
-            SLOGE("Failed to unmount volume on bad removal (%s)", 
+            SLOGE("Failed to unmount volume on bad removal (%s)",
                  strerror(errno));
             // XXX: At this point we're screwed for now
         } else {

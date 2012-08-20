@@ -69,6 +69,7 @@ VolumeManager::VolumeManager() {
     // set dirty ratio to 0 when UMS is active
     mUmsDirtyRatio = 0;
     mVolManagerDisabled = 0;
+    mlun =0;
 }
 
 VolumeManager::~VolumeManager() {
@@ -1168,6 +1169,7 @@ int VolumeManager::shareEnabled(const char *label, const char *method, bool *ena
 
 int VolumeManager::shareVolume(const char *label, const char *method) {
     Volume *v = lookupVolume(label);
+	int part = 0;
 
     if (!v) {
         errno = ENOENT;
@@ -1207,25 +1209,11 @@ int VolumeManager::shareVolume(const char *label, const char *method) {
         return -1;
     }
 
-    int fd;
-    char nodepath[255];
-    snprintf(nodepath,
-             sizeof(nodepath), "/dev/block/vold/%d:%d",
-             MAJOR(d), MINOR(d));
+	part=v->shareVol(mlun);
+	mlun += part;
+	SLOGI("shareVolume: mlun = %d", mlun);
 
-    if ((fd = open(MASS_STORAGE_FILE_PATH, O_WRONLY)) < 0) {
-        SLOGE("Unable to open ums lunfile (%s)", strerror(errno));
-        return -1;
-    }
 
-    if (write(fd, nodepath, strlen(nodepath)) < 0) {
-        SLOGE("Unable to write to ums lunfile (%s)", strerror(errno));
-        close(fd);
-        return -1;
-    }
-
-    close(fd);
-    v->handleVolumeShared();
     if (mUmsSharingCount++ == 0) {
         FILE* fp;
         mSavedDirtyRatio = -1; // in case we fail
@@ -1246,6 +1234,7 @@ int VolumeManager::shareVolume(const char *label, const char *method) {
 
 int VolumeManager::unshareVolume(const char *label, const char *method) {
     Volume *v = lookupVolume(label);
+	int part = 0;
 
     if (!v) {
         errno = ENOENT;
@@ -1262,21 +1251,11 @@ int VolumeManager::unshareVolume(const char *label, const char *method) {
         return -1;
     }
 
-    int fd;
-    if ((fd = open(MASS_STORAGE_FILE_PATH, O_WRONLY)) < 0) {
-        SLOGE("Unable to open ums lunfile (%s)", strerror(errno));
-        return -1;
-    }
+	part=v->unshareVol();
+	mlun -= part;
 
-    char ch = 0;
-    if (write(fd, &ch, 1) < 0) {
-        SLOGE("Unable to write to ums lunfile (%s)", strerror(errno));
-        close(fd);
-        return -1;
-    }
+	SLOGI("unshareVolume: lun = %d", mlun);
 
-    close(fd);
-    v->handleVolumeUnshared();
     if (--mUmsSharingCount == 0 && mSavedDirtyRatio != -1) {
         FILE* fp;
         if ((fp = fopen("/proc/sys/vm/dirty_ratio", "r+"))) {
@@ -1462,6 +1441,10 @@ bool VolumeManager::isMountpointMounted(const char *mp)
 }
 
 int VolumeManager::cleanupAsec(Volume *v, bool force) {
+    /* Only EXTERNAL_STORAGE needs ASEC cleanup. */
+    const char *externalPath = getenv("EXTERNAL_STORAGE") ?: "/mnt/sdcard";
+    if (0 != strcmp(v->getMountpoint(), externalPath))
+        return 0;
     while(mActiveContainers->size()) {
         AsecIdCollection::iterator it = mActiveContainers->begin();
         ContainerData* cd = *it;
